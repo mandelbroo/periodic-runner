@@ -1,45 +1,106 @@
-const runner = require('./index')
+const Runner = require('./index')
 
 describe('periodic runner', () => {
-  it('runs fine for 10 rounds', done => {
-    const INTERVAL = 50
-    const counter = Date.now()
-    const intervals = []
-
+  it('throws error when interval is not set', () => {
     const cb = jest.fn()
-      .mockImplementation(() => intervals.push(Date.now() - counter))
+    const runner = new Runner(cb)
+    expect(() => runner.run()).toThrowError(('interval is not set'))
+    expect(cb).not.toBeCalled()
+  })
 
-    runner(cb, { every: INTERVAL })
+  it('runs fine for 10 rounds', async() => {
+    const INTERVAL = 10
+    const ROUNDS = 10
+    let runner = null
+    let cb = null
 
-    setTimeout(() => {
-      expect(cb).toBeCalled()
-
-      let prev = null
-
-      intervals.forEach((interval, ix) => {
-        const maximumExpected = (ix + 1) * INTERVAL
-        expect(interval).toBeGreaterThanOrEqual(maximumExpected)
-        if (prev) {
-          expect(interval - prev).toBeGreaterThanOrEqual(INTERVAL - 1)
+    let counter = 0
+    await new Promise(resolve => {
+      cb = jest.fn().mockImplementation(() => new Promise(resolveCb => {
+        setTimeout(resolveCb, INTERVAL)
+        counter += 1
+        if (counter >= ROUNDS) {
+          runner.stop()
+          resolve()
         }
-        prev = interval
-      })
-      done()
-    }, 550)
+      }))
+
+      runner = new Runner(cb, { interval: INTERVAL })
+      runner.run()
+    })
+
+    expect(cb).toHaveBeenCalledTimes(10)
+
+    await wait(20)
+    expect(runner.logs.length).toBe(10)
+    runner.logs.forEach(run => {
+      const { executionTime } = run
+      expect(executionTime).toBeGreaterThanOrEqual(INTERVAL - 1)
+    })
+  })
+
+  it('recover after timeout', async() => {
+    const INTERVAL = 10
+    const TIMEOUT = 20
+    let counter = 0
+    let runner = null
+    let cb = null
+
+    await new Promise(resolve => {
+      cb = jest.fn().mockImplementation(() => new Promise(resolveCb => {
+        setTimeout(resolveCb, counter === 0 ? INTERVAL * 2 : INTERVAL)
+        counter += 1
+        if (counter >= 2) {
+          runner.stop()
+          resolve()
+        }
+      }))
+
+      runner = new Runner(cb, { interval: INTERVAL, timeout: TIMEOUT })
+      runner.run()
+    })
+
+    expect(cb).toHaveBeenCalledTimes(2)
+
+    await wait(20)
+    expect(runner.logs.length).toBe(2)
+    expect(runner.logs.find(l => l.error).error)
+      .toBe(`Reached timeout ${TIMEOUT}ms before callback finishes`)
+  })
+
+  it('passes parameters to callback', async() => {
+    let runner = null
+    const cb = jest.fn().mockImplementation(params => {
+      expect(params.test).toBe(true)
+      runner.stop()
+    })
+
+    runner = new Runner(cb, { interval: 0 })
+    runner.run({ test: true })
+
+    await wait(10)
+
+    expect(cb).toHaveBeenCalledTimes(1)
   })
 
   it('timeoutWrapper in time', async() => {
     const cb = jest.fn()
-    await runner.timeoutWrapper(cb)
+    await Runner.timeoutWrapper(cb)
     expect(cb).toBeCalled()
   })
 
-  it('timeoutWrapper reached timeout', () => {
+  it('timeoutWrapper reached timeout', async() => {
     const cb = jest.fn().mockImplementation(
       () => new Promise(resolve => setTimeout(() => resolve, 100))
     )
-    expect(runner.timeoutWrapper(cb, { timeout: 50 }))
-      .rejects.toEqual('Reached timeout 50ms before callback finishes')
+    const res = await Runner.timeoutWrapper(cb, { timeout: 50 })
+    expect(res).toMatchObject({
+      error: 'Reached timeout 50ms before callback finishes'
+    })
     expect(cb).toBeCalled()
   })
 })
+
+function wait(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms))
+}
